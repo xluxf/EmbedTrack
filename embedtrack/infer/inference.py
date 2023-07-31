@@ -919,7 +919,7 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
                 basename = f'mask{time_previous:04d}.tif'
                 save_path = os.path.join(data_dirs["tracking_dir"], basename)
                 #print(f"Saving mask {basename} of prev time {time_previous}")
-                tifffile.imwrite(save_path, instances_prev)
+                tifffile.imwrite(save_path, instances_prev, compression='zlib')
 
                 # delete all
                 del instances_prev, seg_prev

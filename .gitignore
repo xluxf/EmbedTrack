@@ -38,6 +38,7 @@ ctc_raw_data/train/*
 ctc_raw_data/challenge/*
 results/*
 models/*
+temp/*
 
 # keep folder structure
 !**/.gitkeep
