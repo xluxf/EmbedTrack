@@ -27,7 +27,7 @@
 *.profile
 
 # ipynb checkpoints
-*/.ipynb_checkpoints/*
+**/.ipynb_checkpoints
 
 #CTC metrics
 embedtrack/ctc_metrics/CTC_eval/*
