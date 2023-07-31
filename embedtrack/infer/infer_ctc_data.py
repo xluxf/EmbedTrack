@@ -11,6 +11,7 @@ import numpy as np
 from embedtrack.infer.inference import (
     extend_grid,
     infer_sequence,
+    infer_sequence_offsets,
     create_inference_dict,
     calc_padded_img_size,
     init_model,
@@ -47,7 +48,7 @@ def inference(raw_data_path, model_path, config_file, batch_size=32):
     data_id = raw_data_path.parts[-1]
     data_set = raw_data_path.parts[-2]
 
-    ctc_res_path = raw_data_path.parent / (data_id + "_RES")
+    ctc_res_path = raw_data_path.parent / (data_id + "_DATA")
     temp_res_path = "./temp"
     if not os.path.exists(temp_res_path):
         os.makedirs(temp_res_path)
@@ -122,7 +123,7 @@ def inference(raw_data_path, model_path, config_file, batch_size=32):
     )
     cluster = extend_grid(cluster, image_size)
     tracking_dir = os.path.join(project_config["res_dir"], "tracking")
-    infer_sequence(
+    infer_sequence_offsets(
         model,
         dataset_dict,
         model_dict,
@@ -130,6 +131,8 @@ def inference(raw_data_path, model_path, config_file, batch_size=32):
         cluster,
         min_mask_size=train_config["train_dict"]["min_mask_size"] * 0.5,
     )
+
+    '''
     foi_correction(tracking_dir, data_set)
     fill_empty_frames(tracking_dir)
     lineage = pd.read_csv(
@@ -141,8 +144,10 @@ def inference(raw_data_path, model_path, config_file, batch_size=32):
             "Max Track id > 2**16 - uint16 transformation needed for ctc"
             " measure will lead to buffer overflow!"
         )
+        
+    '''
     rename_to_ctc_format(tracking_dir, ctc_res_path)
-    shutil.rmtree(temp_res_path)
+    #shutil.rmtree(temp_res_path)
 
 
 def fill_empty_frames(mask_dir):

@@ -16,6 +16,11 @@ from embedtrack.models.net import TrackERFNet
 import embedtrack.utils.transforms as my_transforms
 from embedtrack.utils.utils import get_indices_pandas
 from pathlib import Path
+from tqdm import tqdm
+from skimage import measure
+
+
+from embedtrack.utils.global_lineage import get_offset_wavefunc
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -75,6 +80,94 @@ class InferenceDataSet(Dataset):
             return self.transform(sample)
         else:
             return sample
+
+
+class InferenceDataSetBatch(Dataset):
+    """
+    TwoDimensionalDataset class
+    """
+
+    def __init__(
+            self,
+            img_files,
+            config,
+            transform=None,
+    ):
+        """
+        Initialize dataset
+        Args:
+            img_files: list
+                list of all the images
+            transform: Callable
+             transformations to apply to each sample
+        """
+
+        # get image and instance list
+
+        self.img_files = sorted(img_files)  # sorted list of all the available images
+        self.config = config
+        self.patches, self.n_crops = self.load_all_patches(img_files, config)
+        self.transform = transform
+
+    def load_all_patches(self, img_files, config):
+
+        samples = []
+
+        print('loading_dataset')
+        n_crops = 0
+
+        for index, _ in enumerate(tqdm(img_files)):
+            crops_frame = generate_crops(
+                os.path.join(img_files[index]),
+                config["crop_size"],
+                config["overlap"],
+            )
+            if n_crops == 0:
+                n_crops = len(crops_frame)
+            else:
+                assert n_crops == len(crops_frame), 'ERROR: the number of crops is not equal over the sequence'
+            samples += crops_frame
+
+        return samples, n_crops
+
+    def __len__(self):
+        return len(self.patches) - self.n_crops
+
+    def __getitem__(self, index):
+
+        # TODO: validate that crops matches
+        sample = {}
+
+        image_curr = self.patches[index + self.n_crops]
+        image_prev = self.patches[index]
+
+        '''
+        crop_curr = np.expand_dims(self.patches[index + self.n_crops], 0)
+        crop_prev = np.expand_dims(self.patches[index], 0)
+        curr_tensor = torch.tensor(crop_curr, dtype=torch.float32)
+        prev_tensor = torch.tensor(crop_prev, dtype=torch.float32)
+        sample["image_curr"] = curr_tensor
+        sample["image_prev"] = prev_tensor
+        '''
+
+        sample["image_curr"] = self.convert_yx_to_cyx(image_curr, key="image")
+        sample["image_prev"] = self.convert_yx_to_cyx(image_prev, key="image")
+
+        sample["index"] = index  # CYX
+        # transform
+        if self.transform is not None:
+            return self.transform(sample)
+        else:
+            return sample
+
+    def convert_yx_to_cyx(self, im, key):
+        if im.ndim == 2 and key == "image":  # gray-scale image
+            im = im[np.newaxis, ...]  # CYX
+        elif im.ndim == 3 and key == "image":  # multi-channel image image
+            pass
+        else:
+            im = im[np.newaxis, ...]
+        return im
 
 
 def get_dataset(name, dataset_opts):
@@ -576,6 +669,348 @@ def smooth_prediction(data_loader, model):
     return img_index, all_seg_images_curr, all_seg_images_prev, all_offsets
 
 
+def smooth_prediction_batch(data_loader, model, n_crops):
+    """
+    Predict a pair of image frames.
+    Args:
+        data_loader: torch.utils.data.DataLoader
+            load image crops
+        model: torch.nn.Module
+            the trained model
+        n_crops: int
+            number of crops needed to compose one image
+
+    Returns:
+        list (image indices), torch.tensor (batch of predicted images t), torch.tensor (batch of predicted images at t-1)
+        torch.tensor (batch of predicted offsets between t->t-1)
+    """
+    # batch-wise prediction of masks and offsets
+    buff_curr = []
+    buff_prev = []
+    buff_offset = []
+    img_index = torch.tensor(np.arange(n_crops))
+
+    with torch.no_grad():
+
+        # batch consists of B patches that can belong to several images
+        for batch in tqdm(data_loader):
+
+            # generates versions that are predicted separately
+            img_curr_aug = augment_image_batch(batch["image_curr"]).to(device)
+            img_prev_aug = augment_image_batch(batch["image_prev"]).to(device)
+
+            # prediction
+            seg_images_curr_aug, seg_images_prev_aug, offsets_aug = model(
+                img_curr_aug, img_prev_aug
+            )
+
+            # de-augmentation - inverse augmentation operations
+            seg_images_curr = deaugment_segmentation_batch(seg_images_curr_aug)
+            seg_images_prev = deaugment_segmentation_batch(seg_images_prev_aug)
+            offsets = deaugment_offset_batch(offsets_aug)
+
+            # concatenate with buffer along batch axis
+            buff_curr += torch.split(seg_images_curr, 1)
+            buff_prev += torch.split(seg_images_prev, 1)
+            buff_offset += torch.split(offsets, 1)
+
+            # reconstruct the image
+            # 1.) check if
+            while len(buff_curr) >= n_crops:
+                seg_curr, buff_curr = buff_curr[:n_crops], buff_curr[n_crops:]
+                seg_prev, buff_prev = buff_prev[:n_crops], buff_prev[n_crops:]
+                seg_offset, buff_offset = buff_offset[:n_crops], buff_offset[n_crops:]
+
+                yield img_index, torch.cat(seg_curr), torch.cat(seg_prev), torch.cat(seg_offset)
+
+            del seg_images_curr, seg_images_prev, offsets
+            torch.cuda.empty_cache()
+
+
+class TensorBuffer:
+    def __init__(self, out_size, img_shape=(3, 256, 256), dev='cpu'):
+        self.out_size = out_size
+        self.img_shape = img_shape
+        self.buffer = torch.zeros((0, *img_shape)).to(dev)
+
+    def get(self):
+        if len(self.buffer) >= self.out_size:
+            out, self.buffer = self.buffer[:self.out_size], self.buffer[self.out_size:]
+
+            return out
+        return None
+
+    def __len__(self):
+        return len(self.buffer) // self.out_size
+
+    def add(self, tensor):
+        self.buffer = torch.cat([self.buffer, tensor], axis=0)
+
+    def is_empty(self):
+        return len(self.buffer) == 0
+
+
+def sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def get_vertices_prob(instances, seed_map, time):
+    """
+    Get probabilities of vertices.
+    Args:
+        instances: torch.tensor
+            labeled image instances in the time 't'
+        seed_map: torch.tensor
+            map of valid pixels
+        time: int
+            frame index
+
+    Returns:
+        vertex_list : list
+            list of tuples describing objects in a format (time, label, prob)
+    """
+
+    return [
+        # sample format : (time, label, prob)
+        (time, reg.label, sigmoid(reg.intensity_mean))
+        for reg in measure.regionprops(instances, intensity_image=seed_map)
+    ]
+
+
+def infer_sequence_offsets(model, data_config, model_config, config, cluster, min_mask_size):
+    """
+    Infer a sequence of images and store the predicted instance segmentation and the tracking offsets.
+    Args:
+        model: torch.nn.Module
+            model to use for inference
+        data_config: dict
+            configuration of the data to infer
+        model_config: dict
+            configuration of the model to infer with
+        config: dict
+            paths where to store the predicted maps
+        cluster: Cluster
+            clustering instance
+        min_mask_size: float
+            threshold to remove small segmented fragments from the prediction
+
+    """
+    # generate image crops
+    padded_img_size = config["padded_img_size"]
+    img_size = config["img_size"]
+    num_seg_classes = sum(model_config["kwargs"]["n_classes"][:-1])
+    num_track_classes = model_config["kwargs"]["n_classes"][-1]
+    data_dirs = dict(
+        tracking_dir=os.path.join(config["res_dir"], "tracking"),
+    )
+    for d_path in data_dirs.values():
+        if not os.path.exists(d_path):
+            os.makedirs(d_path)
+
+    img_files = {
+        int(re.findall("\d+", file)[0]): os.path.join(config["image_dir"], file)
+        for file in os.listdir(config["image_dir"])
+    }
+    time_points = sorted(img_files.keys(), reverse=True)
+    lineage = dict()
+    max_tracking_id = 1
+
+    # lists of all outputs
+    vertex_prob_list = []
+    object_count = []
+    tra_wavefunc_list = []
+    seg_wavefunc_list = []
+
+    # number of objects in the frame {frame_idx : N_t (int)}
+
+    # create dataset
+    dataset = InferenceDataSetBatch(img_files, config, **data_config['kwargs'])
+    n_crops = dataset.n_crops
+
+    # create DataLoader
+    data_loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=36,  # due to augmentation
+        shuffle=False,
+        drop_last=False,
+        num_workers=data_config["workers"],
+        pin_memory=True if device == "cuda" else False,
+    )
+
+    # predict everything
+    # return generator
+    '''
+    (
+        img_index,
+        all_seg_images_curr,
+        all_seg_images_prev,
+        all_offsets,
+    ) = smooth_prediction_batch(data_loader, model)
+    '''
+
+    '''
+    iterates over batches of crops
+    when there are at least 'n_crops' samples, compute and return a prediction
+    '''
+
+    seg_curr_buffer = TensorBuffer(n_crops, img_shape=(5, 256, 256), dev=str(device))
+    seg_prev_buffer = TensorBuffer(n_crops, img_shape=(5, 256, 256), dev=str(device))
+    offset_buffer = TensorBuffer(n_crops, img_shape=(2, 256, 256), dev=str(device))
+
+    time_previous = 0
+    seg_patches_curr, img_index = None, None
+
+    # iterate over batches
+    for i, (img_index,
+            seg_batch_curr,
+            seg_batch_prev,
+            batch_offsets) in enumerate(smooth_prediction_batch(data_loader, model, dataset.n_crops)):
+
+        # add to buffer
+        seg_curr_buffer.add(seg_batch_curr)
+        seg_prev_buffer.add(seg_batch_prev)
+        offset_buffer.add(batch_offsets)
+
+        del seg_batch_curr, seg_batch_prev, batch_offsets
+        torch.cuda.empty_cache()
+
+        while len(seg_curr_buffer) > 0:
+
+            seg_patches_curr = seg_curr_buffer.get()
+            seg_patches_prev = seg_prev_buffer.get()
+            all_offsets = offset_buffer.get()
+
+            # TODO: start a thread
+            # def function with a
+
+            # only the first iteration
+            # ------------------------
+            if time_previous == 0:
+
+                # segment prev
+                seg_prev = patch_crops(
+                    seg_patches_prev.cpu().numpy(),
+                    img_index,
+                    (num_seg_classes, *padded_img_size),
+                    (num_seg_classes, *img_size),
+                    config["window_func"],
+                    crop_size=config["crop_size"],
+                    overlap=config["overlap"],
+                )
+
+                instances_prev = (
+                    cluster_prediction(
+                        cluster,
+                        torch.tensor(seg_prev, device=device, dtype=torch.float),
+                        min_mask_size=min_mask_size,
+                    ).detach().cpu().numpy()
+                )
+
+                seg_prev_offsets = seg_prev[:2]
+                seg_wavefunc_list += get_offset_wavefunc(instances_prev,
+                                                         seg_prev_offsets,
+                                                         time_previous, scale=-1)
+
+                # object count, vertex_probability
+                object_count.append((time_previous, len(np.unique(instances_prev)) - 1))
+                vertex_prob_list += get_vertices_prob(instances_prev, seg_prev[-1], time_previous)
+
+                # save instances prev
+                basename = f'mask{time_previous:04d}.tif'
+                save_path = os.path.join(data_dirs["tracking_dir"], basename)
+                #print(f"Saving mask {basename} of prev time {time_previous}")
+                tifffile.imwrite(save_path, instances_prev)
+
+                # delete all
+                del instances_prev, seg_prev
+                torch.cuda.empty_cache()
+
+            # every iteration
+            # ---------------
+            seg_curr = patch_crops(
+                seg_patches_curr.cpu().numpy(),
+                img_index,
+                (num_seg_classes, *padded_img_size),
+                (num_seg_classes, *img_size),
+                config["window_func"],
+                crop_size=config["crop_size"],
+                overlap=config["overlap"],
+            )
+
+            instances_curr = (
+                cluster_prediction(
+                    cluster,
+                    torch.tensor(seg_curr, device=device, dtype=torch.float),
+                    min_mask_size=min_mask_size,
+                ).detach().cpu().numpy()
+            )
+
+            track_offsets = patch_crops(
+                all_offsets.cpu().numpy(),
+                img_index,
+                (num_track_classes, *padded_img_size),
+                (num_track_classes, *img_size),
+                config["window_func"],
+                crop_size=config["crop_size"],
+                overlap=config["overlap"],
+            )
+
+            seg_curr_offsets = seg_curr[:2]
+
+            # store wave functions
+            time_curr = time_previous + 1
+            tra_wavefunc_list += get_offset_wavefunc(instances_curr,
+                                                     track_offsets,
+                                                     time_curr)
+            seg_wavefunc_list += get_offset_wavefunc(instances_curr,
+                                                     seg_curr_offsets,
+                                                     time_curr,
+                                                     scale=-1)
+
+            # object count, vertex_probability
+            object_count.append((time_curr, len(np.unique(instances_curr)) - 1))
+            vertex_prob_list += get_vertices_prob(instances_curr, seg_curr[-1], time_curr )
+
+            # save instances
+            basename = f'mask{time_curr:04d}.tif'
+            save_path = os.path.join(data_dirs["tracking_dir"], basename)
+            # print(f"Saving mask {basename} of curr time {time_curr}")
+            tifffile.imwrite(save_path, instances_curr, compression='zlib')
+
+            del instances_curr, track_offsets, seg_curr
+            torch.cuda.empty_cache()
+
+            # update time
+            time_previous = time_curr
+
+    # store csv files
+    df = pd.DataFrame(object_count, columns=('time', 'n_objects'))
+    df.to_csv(
+        os.path.join(data_dirs["tracking_dir"], "object_count.csv"),
+        index=False,
+    )
+
+    df = pd.DataFrame(seg_wavefunc_list, columns=(
+        'time', 'label', 'mean_x', 'mean_y', 'std_x', 'std_y', 'cov00', 'cov01', 'cov10', 'cov11'))
+    df.to_csv(
+        os.path.join(data_dirs["tracking_dir"], "seg_offsets.csv"),
+        index=False,
+    )
+
+    df = pd.DataFrame(tra_wavefunc_list, columns=(
+        'time', 'label', 'mean_x', 'mean_y', 'std_x', 'std_y', 'cov00', 'cov01', 'cov10', 'cov11'))
+    df.to_csv(
+        os.path.join(data_dirs["tracking_dir"], "tra_offsets.csv"),
+        index=False,
+    )
+
+    df = pd.DataFrame(vertex_prob_list, columns=('time', 'label', 'prob'))
+    df.to_csv(
+        os.path.join(data_dirs["tracking_dir"], "vertex_prob.csv"),
+        index=False,
+    )
+
+
 def infer_sequence(model, data_config, model_config, config, cluster, min_mask_size):
     """
     Infer a sequence of images and store the predicted instance segmentation and the tracking offsets.
@@ -966,7 +1401,7 @@ def calc_padded_img_size(img_size, crop_size, overlap):
     pad_w = (int(pad_top_left[1]), int(pad_bottom_right[1]))
     padded_img_size = (height + sum(pad_h), width + sum(pad_w))
     return padded_img_size, (pad_h, pad_w)
-
+            
 
 def rename_to_ctc_format(data_dir, res_dir):
     """Rename tracked data to CTC naming conventions."""
@@ -974,12 +1409,19 @@ def rename_to_ctc_format(data_dir, res_dir):
         os.makedirs(res_dir)
     for file in os.listdir(data_dir):
         if file.endswith("tif"):
-            time_step = re.findall("\d+", file)[0]
-            new_file_name = "mask" + time_step + ".tif"
+            if file.startswith("t"):
+                time_step = re.findall("\d+", file)[0]
+                new_file_name = "mask" + time_step + ".tif"
+            else:
+                new_file_name = file
         elif file.endswith("txt"):
             new_file_name = "res_track.txt"
+        elif file.endswith("csv"):
+            print(file)
+            new_file_name = file
         shutil.copy(os.path.join(data_dir, file), os.path.join(res_dir, new_file_name))
-        if file.endswith("tif"):
+
+        if file.endswith("tif") and file.startswith("t"):
             img = tifffile.imread(os.path.join(res_dir, new_file_name))
             tifffile.imsave(os.path.join(res_dir, new_file_name), img.astype(np.uint16))
 
