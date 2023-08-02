@@ -64,6 +64,7 @@ class EmbedTrackLoss(nn.Module):
         w_inst=1,
         w_var=10,
         w_seed=1,
+        w_track=2,
         iou=False,
         iou_meter=None,
     ):
@@ -78,6 +79,7 @@ class EmbedTrackLoss(nn.Module):
             w_inst (int): weight for the instance loss
             w_var (int): weight for the variance loss
             w_seed (int): weight for the seed loss
+            w_track (int):weight for the tracking loss
             iou (bool): if True, calculate the IOU of the instance segmentation
             iou_meter (Callable): contains the calculated IOU scores
 
@@ -124,6 +126,7 @@ class EmbedTrackLoss(nn.Module):
             var_loss = 0
             instance_loss = 0
             seed_loss = 0
+            track_loss = 0
 
             instance = instances[b].unsqueeze(0)  # 1 x h x w
             label = labels[b].unsqueeze(0)  # 1 x h x w
@@ -161,20 +164,26 @@ class EmbedTrackLoss(nn.Module):
                     )  # TODO --> should this edge case change!
                     center = xy_in.mean(1).view(2, 1, 1)  # 2 x 1 x 1
 
-                # calculate sigma
+                # calculate sigma, not averaged
                 sigma_in = sigma[in_mask.expand_as(sigma)].view(self.n_sigma, -1)
-
                 s = all_sigmas[:, i].view(self.n_sigma, 1, 1)  # n_sigma x 1 x 1
+
+                # ASSUMPTION - sigma is only mean of sigma_in
+                #assert sigma_in.mean().isclose(s)
 
                 # calculate var loss before exp
                 var_loss = var_loss + torch.mean(torch.pow(sigma_in - s.detach(), 2))
 
+                # if sigmoid constrained 0...1 before exp afterwards scale 1...22026 - more than enough range to
+                # simulate pix size objects and large objects!
                 s = torch.exp(
                     s * 10
-                )  # if sigmoid constrained 0...1 before exp afterwards scale 1...22026 - more than enough range to simulate pix size objects and large objects!
+                )
+
                 dist = torch.exp(
-                    -1
-                    * torch.sum(torch.pow(spatial_emb - center, 2) * s, 0, keepdim=True)
+                    - torch.sum(torch.pow(spatial_emb - center, 2) * s,
+                                dim=0,
+                                keepdim=True)
                 )
 
                 # apply lovasz-hinge loss
@@ -205,8 +214,7 @@ class EmbedTrackLoss(nn.Module):
                         .float()
                     )
                     dist_tracking = torch.exp(
-                        -1
-                        * torch.sum(
+                        - torch.sum(
                             torch.pow(tracking_emb - gt_prev_center_yxms, 2) * s,
                             0,
                             keepdim=True,
@@ -219,6 +227,7 @@ class EmbedTrackLoss(nn.Module):
 
             seed_loss += seed_loss_it
 
+            # validation
             # calculate instance IOU
             if iou:
                 instance_pred = self.cluster.cluster_pixels(
@@ -231,7 +240,8 @@ class EmbedTrackLoss(nn.Module):
                 for score in iou_scores:
                     iou_meter.update(score)
             # seed_loss = seed_loss / torch.prod(torch.tensor(instances.shape[1:]))
-            loss += w_inst * instance_loss + w_var * var_loss + w_seed * seed_loss
+            #loss += w_inst * instance_loss + w_var * var_loss + w_seed * seed_loss
+            loss += w_inst * instance_loss + w_var * var_loss + w_seed * seed_loss + w_track * track_loss
             loss_values["instance"] += (
                 w_inst * instance_loss.detach()
                 if isinstance(instance_loss, torch.Tensor)
@@ -248,15 +258,15 @@ class EmbedTrackLoss(nn.Module):
                 else torch.tensor(w_seed * seed_loss).float().to(device)
             )
             loss_values["track"] += (
-                track_loss.detach()
+                w_track * track_loss.detach()
                 if isinstance(track_loss, torch.Tensor)
                 else torch.tensor(track_loss).float().to(device)
             )
 
-        if track_count > 0:
-            track_loss /= track_count
-        loss += track_loss
-        loss = loss / (b + 1)
+        # if track_count > 0:
+        #     track_loss /= track_count
+        # loss += track_loss
+        loss = loss / batch_size
 
         return loss + segmentation_predictions.sum() * 0, loss_values
 

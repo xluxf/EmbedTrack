@@ -108,7 +108,7 @@ class VisualizeTraining:
         self.rescale = True
 
     def set_ax_off(self, ax):
-        if isinstance(ax, np.object):
+        if isinstance(ax, object):
             for sub_ax in ax.flatten():
                 sub_ax.axis("off")
         else:
@@ -195,7 +195,7 @@ class VisualizeTraining:
             edit_labels = log_to_scalar_ticks_label(
                 self.color_bars[key].yaxis.get_ticklabels()
             )
-            self.color_bars[key].yaxis._set_ticklabels(edit_labels)
+            # self.color_bars[key].yaxis._set_ticklabels(edit_labels)
 
     def vis_raw_img_pair(self, image_pair):
         img_t_1, img_t_0 = image_pair
@@ -790,4 +790,4 @@ def log_to_scalar_ticks_label(tick_labels):
 
 
 def degrid(prediction, grid_size, pixel_size):
-    return torch.round(prediction * (grid_size - 1) / pixel_size).int()
+    return torch.round(prediction * (grid_size - 1) / pixel_size).int().cpu()

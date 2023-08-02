@@ -116,9 +116,9 @@ class InferenceDataSetBatch(Dataset):
         print('loading_dataset')
         n_crops = 0
 
-        for index, _ in enumerate(tqdm(img_files)):
+        for f_idx in tqdm(img_files.keys()):
             crops_frame = generate_crops(
-                os.path.join(img_files[index]),
+                os.path.join(img_files[f_idx]),
                 config["crop_size"],
                 config["overlap"],
             )
@@ -977,6 +977,18 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
             # print(f"Saving mask {basename} of curr time {time_curr}")
             tifffile.imwrite(save_path, instances_curr, compression='zlib')
 
+            # DEBUG
+            # save offsets to check properties
+            seg_basename = f'DEBUG_seg_offset{time_curr:04d}.npy'
+            tra_basename = f'DEBUG_tra_offset{time_curr:04d}.npy'
+            instances_basename = f'DEBUG_instances{time_curr:04d}.npy'
+            np.save(os.path.join(data_dirs["tracking_dir"], tra_basename), track_offsets)
+            np.save(os.path.join(data_dirs["tracking_dir"], seg_basename), seg_curr_offsets)
+            np.save(os.path.join(data_dirs["tracking_dir"], instances_basename), instances_curr)
+
+
+            print(track_offsets.shape, seg_curr_offsets.shape)
+
             del instances_curr, track_offsets, seg_curr
             torch.cuda.empty_cache()
 
@@ -1419,6 +1431,12 @@ def rename_to_ctc_format(data_dir, res_dir):
         elif file.endswith("csv"):
             print(file)
             new_file_name = file
+        elif file.endswith("npy"):
+            new_file_name = file
+        else:
+            print(f'file {file} not moved to DATA folder')
+            continue
+
         shutil.copy(os.path.join(data_dir, file), os.path.join(res_dir, new_file_name))
 
         if file.endswith("tif") and file.startswith("t"):

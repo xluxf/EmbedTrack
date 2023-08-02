@@ -6,6 +6,10 @@ parts of generate_image_crops and init_training based on code of Manan Lalit, Ma
 import json
 from datetime import datetime
 from glob import glob
+import os
+import numpy as np
+from pathlib import Path
+import tifffile
 
 from PIL import Image
 from tqdm import tqdm
@@ -577,6 +581,7 @@ def init_training(data_config, train_config, model_config):
     with open(os.path.join(save_dir, "config.json"), "w") as json_file:
         print(json.dumps(all_configs, sort_keys=True, indent=4), file=json_file)
 
+    print('begin training')
     begin_training(
         train_dataset_dict,
         val_dataset_dict,

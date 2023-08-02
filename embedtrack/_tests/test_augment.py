@@ -55,7 +55,7 @@ def test_offset_correctly_augmented_2D():
                 - augmented_data["flow"]
                 .squeeze()[:, position[0], position[1]]
                 .reshape(-1, 1)
-            ).astype(np.int)
+            ).astype(int)
             dummy_augmented[tuple(prev_pos.reshape(-1))] = label
         assert (dummy_augmented - prev_frame).sum() == 0, "Wrong flipping"
 

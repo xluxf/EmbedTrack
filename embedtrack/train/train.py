@@ -139,7 +139,8 @@ def train_vanilla(
         for key in loss_parts_meter.keys():
             loss_parts_meter[key].update(loss_parts[key].mean().item())
         # visualize data
-        if display_it is not None:
+        # tuned off data visualising
+        if (display_it is not None) and False:
             if i % display_it == 0 and i != 0:
                 prediction = (output[0][0], output[1][0])
                 ground_truth = (
@@ -291,7 +292,7 @@ def begin_training(
     global train_dataset_it, val_dataset_it, model, loss_fcn, optimizer, cluster, visualize_training, scheduler
 
     # train dataloader
-
+    print('train dataset')
     train_dataset = get_dataset(
         train_dataset_dict["name"], train_dataset_dict["kwargs"]
     )
@@ -320,6 +321,7 @@ def begin_training(
     model.init_output(loss_dict["lossOpts"]["n_sigma"])
     model = torch.nn.DataParallel(model).to(device)
 
+    print('cluster')
     cluster = Cluster(
         configs["grid_y"],
         configs["grid_x"],
@@ -352,6 +354,7 @@ def begin_training(
         // train_dataset_dict["virtual_batch_multiplier"],
     )
 
+    print('visualize_training')
     visualize_training = VisualizeTraining(
         cluster,
         configs["save_dir"],

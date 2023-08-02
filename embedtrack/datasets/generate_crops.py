@@ -152,8 +152,8 @@ def process(
     size_x, size_y = image.shape
     n_max_x = int(size_x / int(crop_size * overlap))
     n_max_y = int(size_y / int(crop_size * overlap))
-    x_start = (np.arange(0, n_max_x) * crop_size * overlap).astype(np.int)
-    y_start = (np.arange(0, n_max_y) * crop_size * overlap).astype(np.int)
+    x_start = (np.arange(0, n_max_x) * crop_size * overlap).astype(int)
+    y_start = (np.arange(0, n_max_y) * crop_size * overlap).astype(int)
     upper_left = product(x_start, y_start)
     n_ids = np.unique(instance)
     n_ids = n_ids[n_ids > 0]
@@ -231,8 +231,8 @@ def calc_obj_shifts(
     size_x, size_y = tifffile.imread(center_image_list[0]).shape
     n_max_x = int(size_x / int(crop_size * overlap))
     n_max_y = int(size_y / int(crop_size * overlap))
-    x_start = (np.arange(0, n_max_x) * crop_size * overlap).astype(np.int)
-    y_start = (np.arange(0, n_max_y) * crop_size * overlap).astype(np.int)
+    x_start = (np.arange(0, n_max_x) * crop_size * overlap).astype(int)
+    y_start = (np.arange(0, n_max_y) * crop_size * overlap).astype(int)
     for (index_curr, index_prev) in image_pairs_index:
         center_img_curr = tifffile.imread(center_image_list[index_curr])
         center_img_prev = tifffile.imread(center_image_list[index_prev])

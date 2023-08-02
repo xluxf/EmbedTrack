@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+from tqdm import tqdm
 from torch.utils.data import Dataset
 
 
@@ -124,7 +125,7 @@ class TwoDimensionalDataset(Dataset):
         """
         # same name for all crops: masks, images, center_images
         pairs = []
-        for i, path_img_file in enumerate(self.image_list):
+        for i, path_img_file in enumerate(tqdm(self.image_list)):
             path_img, name_img = os.path.split(path_img_file)
             name_img, ending = name_img.split(".")
             time, patch_id = name_img.split("_")
@@ -212,10 +213,10 @@ class TwoDimensionalDataset(Dataset):
         if len(self.center_image_list) != 0:
             center_image_curr = tifffile.imread(
                 self.center_image_list[index_curr]
-            ).astype(np.bool)
+            ).astype(bool)
             center_image_prev = tifffile.imread(
                 self.center_image_list[index_prev]
-            ).astype(np.bool)
+            ).astype(bool)
             center_image_curr = self.convert_yx_to_cyx(
                 center_image_curr, key="center_image"
             )  # CYX
