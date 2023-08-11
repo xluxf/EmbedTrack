@@ -326,7 +326,7 @@ def deaugment_segmentation(segmentation_batch):
     Deaugment (rotate+flip) predictions and calculate mean prediction
     Args:
         segmentation_batch: torch.tensor
-              augmented segmentation maps
+            augmented segmentation maps
 
     Returns: deaugmented segmentation maps
 
@@ -668,7 +668,6 @@ def smooth_prediction(data_loader, model):
         all_offsets = torch.cat(all_offsets)
     return img_index, all_seg_images_curr, all_seg_images_prev, all_offsets
 
-
 def smooth_prediction_batch(data_loader, model, n_crops):
     """
     Predict a pair of image frames.
@@ -693,7 +692,7 @@ def smooth_prediction_batch(data_loader, model, n_crops):
     with torch.no_grad():
 
         # batch consists of B patches that can belong to several images
-        for batch in tqdm(data_loader):
+        for i, batch in enumerate(tqdm(data_loader)):
 
             # generates versions that are predicted separately
             img_curr_aug = augment_image_batch(batch["image_curr"]).to(device)
@@ -744,7 +743,7 @@ class TensorBuffer:
         return len(self.buffer) // self.out_size
 
     def add(self, tensor):
-        self.buffer = torch.cat([self.buffer, tensor], axis=0)
+        self.buffer = torch.cat([self.buffer, tensor], 0)
 
     def is_empty(self):
         return len(self.buffer) == 0
@@ -795,6 +794,11 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
             threshold to remove small segmented fragments from the prediction
 
     """
+
+    print(config, data_config, model_config)
+    batch_size = int(data_config['batch_size'])
+    grid_x, grid_y = config['grid_x'], config['grid_y']
+
     # generate image crops
     padded_img_size = config["padded_img_size"]
     img_size = config["img_size"]
@@ -830,7 +834,7 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
     # create DataLoader
     data_loader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=36,  # due to augmentation
+        batch_size=batch_size*8,  # due to augmentation
         shuffle=False,
         drop_last=False,
         num_workers=data_config["workers"],
@@ -853,9 +857,9 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
     when there are at least 'n_crops' samples, compute and return a prediction
     '''
 
-    seg_curr_buffer = TensorBuffer(n_crops, img_shape=(5, 256, 256), dev=str(device))
-    seg_prev_buffer = TensorBuffer(n_crops, img_shape=(5, 256, 256), dev=str(device))
-    offset_buffer = TensorBuffer(n_crops, img_shape=(2, 256, 256), dev=str(device))
+    seg_curr_buffer = TensorBuffer(n_crops, img_shape=(5, grid_x, grid_y), dev=str(device))
+    seg_prev_buffer = TensorBuffer(n_crops, img_shape=(5, grid_x, grid_y), dev=str(device))
+    offset_buffer = TensorBuffer(n_crops, img_shape=(4, grid_x, grid_y), dev=str(device))
 
     time_previous = 0
     seg_patches_curr, img_index = None, None
@@ -986,8 +990,6 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
             np.save(os.path.join(data_dirs["tracking_dir"], seg_basename), seg_curr_offsets)
             np.save(os.path.join(data_dirs["tracking_dir"], instances_basename), instances_curr)
 
-
-            print(track_offsets.shape, seg_curr_offsets.shape)
 
             del instances_curr, track_offsets, seg_curr
             torch.cuda.empty_cache()

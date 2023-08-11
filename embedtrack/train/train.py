@@ -39,7 +39,7 @@ def train(virtual_batch_multiplier, n_sigma, args):
     # define meters
     loss_meter = AverageMeter()
     loss_parts_meter = {
-        key: AverageMeter() for key in ["instance", "variance", "seed", "track"]
+        key: AverageMeter() for key in ["instance", "tracking", "var_instance",  "var_tracking", "seed"]
     }
 
     # put model into training mode
@@ -100,7 +100,7 @@ def train_vanilla(
     # define meters
     loss_meter = AverageMeter()
     loss_parts_meter = {
-        key: AverageMeter() for key in ["instance", "variance", "seed", "track"]
+        key: AverageMeter() for key in ["instance", "tracking", "var_instance",  "var_tracking", "seed"]
     }
 
     # put model into training mode
@@ -160,7 +160,7 @@ def val(virtual_batch_multiplier, n_sigma, calc_iou, args):
     # define meters
     loss_meter, iou_meter = AverageMeter(), AverageMeter()
     loss_parts_meter = {
-        key: AverageMeter() for key in ["instance", "variance", "seed", "track"]
+        key: AverageMeter() for key in ["instance", "tracking", "var_instance",  "var_tracking", "seed"]
     }
     # put model into eval mode
     model.eval()
@@ -216,7 +216,7 @@ def val_vanilla(
     # define meters
     loss_meter, iou_meter = AverageMeter(), AverageMeter()
     loss_parts_meter = {
-        key: AverageMeter() for key in ["instance", "variance", "seed", "track"]
+        key: AverageMeter() for key in ["instance", "tracking", "var_instance",  "var_tracking", "seed"]
     }
 
     # put model into eval mode

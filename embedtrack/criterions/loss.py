@@ -41,6 +41,7 @@ class EmbedTrackLoss(nn.Module):
                 n_sigma, foreground_weight
             )
         )
+        print(f"grid size: {grid_x}x{grid_y}")
         print("*************************")
         self.cluster = cluster
         self.n_sigma = n_sigma
@@ -86,7 +87,11 @@ class EmbedTrackLoss(nn.Module):
         Returns: (torch.Tensor) loss, (dict) values of the different loss parts
 
         """
-        segmentation_predictions, offset_predictions = predictions
+
+        # segmentation_prediction.shape == (b, 5, w, h)
+        # tracking_predictions.shape == (b, 4, w, h)
+        segmentation_predictions, tracking_predictions = predictions
+
         # instances B 1 Y X
         batch_size, height, width = (
             segmentation_predictions.size(0),
@@ -94,94 +99,89 @@ class EmbedTrackLoss(nn.Module):
             segmentation_predictions.size(3),
         )
 
-        yxm_s = self.yxm[:, 0:height, 0:width]  # N x h x w if 2D images: N=2
+        yxm_s = self.yxm[:, 0:height, 0:width].contiguous()  # N x h x w if 2D images: N=2
 
-        loss = torch.tensor(0, device=device, dtype=torch.float)
-        track_loss = 0
-        track_count = 0
-
+        # reported loss values
         loss_values = {
-            "instance": 0,
-            "variance": 0,
-            "seed": 0,
-            "track": 0,
+            "instance": torch.tensor(0.),
+            "var_instance": torch.tensor(0.),
+            "seed": torch.tensor(0.),
+            "tracking": torch.tensor(0.),
+            "var_tracking": torch.tensor(0.)
         }
-        for b in range(0, batch_size):
-            seed_loss_it = 0
-            seed_loss_count = 0
-            segm_offsets = torch.tanh(segmentation_predictions[b, 0:2])
-            spatial_emb = segm_offsets + yxm_s
-            if b < batch_size // 2:
-                track_offsets = torch.tanh(offset_predictions[b, ...])
-                tracking_emb = yxm_s - track_offsets
-            # edited to be between 0...1 -> scaling with exp(K*x)
-            sigma = torch.sigmoid(
-                segmentation_predictions[b, 2 : 2 + self.n_sigma]
-            )  # n_sigma x h x w
 
-            seed_map = torch.sigmoid(
-                segmentation_predictions[b, 2 + self.n_sigma : 2 + self.n_sigma + 1]
-            )  # 1 x h x w
+        # only instances
+        # similar to embedSeg
+        seg_loss = torch.tensor(0., device=device, requires_grad=True)
+        tra_loss = torch.tensor(0., device=device, requires_grad=True)
+
+        for b in range(0, batch_size):
+
+            # count of objects
+            obj_count = 0
+
+            # process segmentation prediction
+            spatial_emb = torch.tanh(segmentation_predictions[b, 0:2]) + yxm_s        # 2 x h x w
+            # TODO: INFO sigma is originaly not activated in EmbedSeg
+            sigma_seg = torch.sigmoid(segmentation_predictions[b, 2:2+self.n_sigma])  # n_sigma x h x w
+            seed_map = torch.sigmoid(segmentation_predictions[b, 2+self.n_sigma:2+self.n_sigma+1])  # 1 x h x w
+
             # loss accumulators
-            var_loss = 0
+            var_inst_loss = 0
             instance_loss = 0
             seed_loss = 0
-            track_loss = 0
 
-            instance = instances[b].unsqueeze(0)  # 1 x h x w
-            label = labels[b].unsqueeze(0)  # 1 x h x w
+            instance = instances[b].unsqueeze(0)    # 1 x h x w
+            label = labels[b].unsqueeze(0)          # 1 x h x w
             center_image = center_images[b].unsqueeze(0)  # 1 x h x w
 
+            # get instances
             instance_ids = instance.unique()
             instance_ids = instance_ids[instance_ids != 0]
 
-            # regress bg to zero
+            # regress SEED bg to zero
             bg_mask = label == 0
 
             if bg_mask.sum() > 0:
-                seed_loss_it += torch.mean(torch.pow(seed_map[bg_mask] - 0, 2))
-                seed_loss_count += bg_mask.sum()
+                seed_loss = seed_loss + torch.sum(torch.pow(seed_map[bg_mask] - 0, 2))
+
+            # TODO: train also background image
             if len(instance_ids) == 0:  # background image
                 continue
-            # n_dim; n_sigma
-            all_sigmas = torch.stack(
-                [
-                    sigma[:, instance.eq(inst_id).squeeze()].mean(dim=1)
-                    for inst_id in instance_ids
-                ]
-            ).T
 
-            for i, inst_id in enumerate(instance_ids):
-                in_mask = instance.eq(inst_id)  # 1 x h x w
-                center_mask = in_mask & center_image.byte().bool()
-                if center_mask.sum().eq(0):
+            for inst_id in instance_ids:
+
+                in_mask = instance.eq(inst_id)                                        # mask of the object, 1 x h x w
+                center_mask = in_mask & center_image                                  # location of the seg center
+
+                # TODO: resolve why there is no overlap
+                if center_mask.sum().eq(0):                                           # no object
+                    #print('SEG: no overlap of in_mask and center_image')
                     continue
                 if center_mask.sum().eq(1):
-                    center = yxm_s[center_mask.expand_as(yxm_s)].view(2, 1, 1)
+                    center = yxm_s[center_mask.expand_as(yxm_s)].view(2, 1, 1)        # indexes of the center
                 else:
+                    print('SEG: multiple overlaps of in_mask and center_image')
                     xy_in = yxm_s[in_mask.expand_as(yxm_s)].view(
                         2, -1
                     )  # TODO --> should this edge case change!
                     center = xy_in.mean(1).view(2, 1, 1)  # 2 x 1 x 1
 
-                # calculate sigma, not averaged
-                sigma_in = sigma[in_mask.expand_as(sigma)].view(self.n_sigma, -1)
-                s = all_sigmas[:, i].view(self.n_sigma, 1, 1)  # n_sigma x 1 x 1
-
-                # ASSUMPTION - sigma is only mean of sigma_in
-                #assert sigma_in.mean().isclose(s)
+                # calculate sigma
+                sigma_in = sigma_seg[in_mask.expand_as(sigma_seg)].view(self.n_sigma, -1)
+                s_seg = sigma_in.mean(dim=1).view(self.n_sigma, 1, 1)  # n_sigma x 1 x 1
 
                 # calculate var loss before exp
-                var_loss = var_loss + torch.mean(torch.pow(sigma_in - s.detach(), 2))
+                var_inst_loss = var_inst_loss + torch.mean(torch.pow(sigma_in - s_seg.detach(), 2))
 
                 # if sigmoid constrained 0...1 before exp afterwards scale 1...22026 - more than enough range to
                 # simulate pix size objects and large objects!
-                s = torch.exp(
-                    s * 10
+                s_seg = torch.exp(
+                    s_seg * 10
                 )
 
                 dist = torch.exp(
-                    - torch.sum(torch.pow(spatial_emb - center, 2) * s,
+                    - torch.sum(torch.pow(spatial_emb - center, 2) * s_seg,
                                 dim=0,
                                 keepdim=True)
                 )
@@ -192,40 +192,9 @@ class EmbedTrackLoss(nn.Module):
                 )
 
                 # seed loss
-                seed_loss_it += self.foreground_weight * torch.mean(
+                seed_loss += self.foreground_weight * torch.sum(
                     torch.pow(seed_map[in_mask] - dist[in_mask].detach(), 2)
                 )
-                seed_loss_count += in_mask.sum()
-
-                # segmentation branch predictions where concatinated (frames t, frames t-1)
-                # since tracking offset is calculated between t->t-1
-                # the tracking batch has only half the length compared to the segmentation predictions
-                if b < (batch_size // 2):
-                    index_gt_center = (in_mask & center_image.byte().bool()).squeeze()
-                    if index_gt_center.sum().eq(0):
-                        continue
-                    # this is -offset due to how they were calculated before
-                    gt_prev_center_yxms = (
-                        (
-                            yxm_s[:, index_gt_center]
-                            - offsets[b, :, index_gt_center] / self.yx_shape
-                        )
-                        .view(-1, 1, 1)
-                        .float()
-                    )
-                    dist_tracking = torch.exp(
-                        - torch.sum(
-                            torch.pow(tracking_emb - gt_prev_center_yxms, 2) * s,
-                            0,
-                            keepdim=True,
-                        )
-                    )
-                    track_loss = track_loss + lovasz_hinge(
-                        dist_tracking * 2 - 1, in_mask.to(device)
-                    )
-                    track_count += 1
-
-            seed_loss += seed_loss_it
 
             # validation
             # calculate instance IOU
@@ -239,37 +208,139 @@ class EmbedTrackLoss(nn.Module):
                 )
                 for score in iou_scores:
                     iou_meter.update(score)
-            # seed_loss = seed_loss / torch.prod(torch.tensor(instances.shape[1:]))
-            #loss += w_inst * instance_loss + w_var * var_loss + w_seed * seed_loss
-            loss += w_inst * instance_loss + w_var * var_loss + w_seed * seed_loss + w_track * track_loss
-            loss_values["instance"] += (
-                w_inst * instance_loss.detach()
-                if isinstance(instance_loss, torch.Tensor)
-                else torch.tensor(w_inst * instance_loss).float().to(device)
+
+                # TODO: do the same for tracking predictions
+
+            # normalize losses
+            if obj_count > 0:
+                instance_loss /= obj_count
+                var_inst_loss /= obj_count
+            seed_loss = seed_loss / (height * width)
+
+            seg_loss = seg_loss +\
+                       w_inst * instance_loss +\
+                       w_var * var_inst_loss +\
+                       w_seed * seed_loss
+
+            loss_values["instance"] += w_inst * (
+                instance_loss.detach().cpu()
+                if isinstance(instance_loss, torch.Tensor) else torch.tensor(instance_loss,
+                                                                             dtype=torch.float,
+                                                                             device='cpu')
             )
-            loss_values["variance"] += (
-                w_var * var_loss.detach()
-                if isinstance(var_loss, torch.Tensor)
-                else torch.tensor(w_var * var_loss).float().to(device)
+            loss_values["var_instance"] += w_var * (
+                var_inst_loss.detach().cpu()
+                if isinstance(var_inst_loss, torch.Tensor) else torch.tensor(var_inst_loss,
+                                                                             dtype=torch.float,
+                                                                             device='cpu')
             )
-            loss_values["seed"] += (
-                w_seed * seed_loss.detach()
-                if isinstance(seed_loss, torch.Tensor)
-                else torch.tensor(w_seed * seed_loss).float().to(device)
-            )
-            loss_values["track"] += (
-                w_track * track_loss.detach()
-                if isinstance(track_loss, torch.Tensor)
-                else torch.tensor(track_loss).float().to(device)
+            loss_values["seed"] += w_seed * (
+                seed_loss.detach().cpu()
+                if isinstance(seed_loss, torch.Tensor) else torch.tensor(seed_loss,
+                                                                         dtype=torch.float,
+                                                                         device='cpu')
             )
 
-        # if track_count > 0:
-        #     track_loss /= track_count
-        # loss += track_loss
+        # TRACKING
+        # segmentation branch predictions where concatenated (frames t, frames t-1)
+        # since tracking offset is calculated between t->t-1
+        # the tracking batch has only half the length compared to the segmentation predictions
+        half_batch_size = batch_size // 2
+        for b in range(half_batch_size):
+
+            tra_obj_count = 0
+            tracking_loss = 0
+            var_tracking_loss = 0
+
+            tracking_emb = yxm_s - torch.tanh(tracking_predictions[b, 0:2])
+            # TODO: not activated in EmbedSeg
+            sigma_tra = torch.sigmoid(tracking_predictions[b, 2:2 + self.n_sigma])  # n_sigma x h x w
+
+            instance_curr = instances[b].unsqueeze(0)    # 1 x h x w
+            center_image_curr = center_images[b].unsqueeze(0)  # 1 x h x w
+            offset = offsets[b]
+
+            instance_ids = instance_curr.unique()
+            instance_ids = instance_ids[instance_ids != 0]
+
+            for inst_id in instance_ids:
+
+                in_mask = instance_curr.eq(inst_id)
+                center_mask = in_mask & center_image_curr
+                center = yxm_s[center_mask.expand_as(yxm_s)].view(-1, 1, 1)
+
+                # an instance needs to have the center in a prev frame
+                if center_mask.sum() == 0:
+                    continue
+
+                assert center_mask.sum() == 1, center_mask.sum()
+
+                # calculate a proper offset
+                # TODO: replace 256 with self.grid_x
+                gt_tra_center = (center - offset[center_mask.expand_as(offset)].view(-1, 1, 1) / 256).view(-1, 1, 1).float()
+                if (gt_tra_center.min() < 0) or (gt_tra_center.max() > 1):
+                    # print(f'ERR: excluding gt_tra_center {list(gt_tra_center.detach().cpu().numpy())}')
+                    continue
+
+                # assert len(gt_tra_center) == 2, gt_tra_center
+                # assert gt_tra_center.shape == (2, 1, 1), gt_tra_center.shape
+
+                # calculate sigma
+                sigma_in_tra = sigma_tra[in_mask.expand_as(sigma_tra)].view(self.n_sigma, -1)
+                s_tra = sigma_in_tra.mean(1).view(self.n_sigma, 1, 1)  # n_sigma x 1 x 1
+
+                # assert len(s_tra) == 2, s_tra
+                # assert s_tra.shape == (2, 1, 1), s_tra.shape
+
+                # calculate var loss before exp
+                var_tracking_loss = var_tracking_loss + torch.sum(torch.pow(sigma_in_tra - s_tra.detach(), 2))
+
+                s_tra = torch.exp(
+                    s_tra * 10
+                )
+
+                dist_tracking = torch.exp(
+                    - torch.sum(
+                        torch.pow(tracking_emb - gt_tra_center, 2) * s_tra,
+                        0,
+                        keepdim=True,
+                    )
+                )
+                tracking_loss = tracking_loss + lovasz_hinge(
+                    dist_tracking * 2 - 1, in_mask.to(device)
+                )
+                tra_obj_count += 1
+
+            # normalize losses
+            if tra_obj_count > 0:
+                tracking_loss /= tra_obj_count
+                var_tracking_loss /= tra_obj_count
+
+            tra_loss = tra_loss +\
+                       w_inst * tracking_loss +\
+                       w_var * var_tracking_loss
+
+            loss_values["tracking"] += 2 * w_inst * (
+                tracking_loss.detach().cpu()
+                if isinstance(tracking_loss, torch.Tensor) else torch.tensor(tracking_loss,
+                                                                             dtype=torch.float,
+                                                                             device='cpu')
+            )
+            loss_values["var_tracking"] += 2 * w_var * (
+                var_tracking_loss.detach().cpu()
+                if isinstance(var_tracking_loss, torch.Tensor) else torch.tensor(var_tracking_loss,
+                                                                                 dtype=torch.float,
+                                                                                 device='cpu')
+            )
+
+        # there are only half of tra samples
+        loss = seg_loss + 2 * tra_loss
         loss = loss / batch_size
 
-        return loss + segmentation_predictions.sum() * 0, loss_values
+        for key in loss_values.keys():
+            loss_values[key] = loss_values[key] / batch_size
 
+        return loss, loss_values
 
 def calculate_iou(pred, label):
     intersection = ((label == 1) & (pred == 1)).sum()

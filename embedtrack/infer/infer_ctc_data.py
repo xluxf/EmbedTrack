@@ -29,7 +29,7 @@ import tifffile
 import torch
 
 
-def inference(raw_data_path, model_path, config_file, batch_size=32):
+def inference(raw_data_path, model_path, config_file, batch_size=32, overlap=0.25):
     """
     Segment and track a ctc dataset using a trained EmbedTrack model.
     Args:
@@ -41,6 +41,8 @@ def inference(raw_data_path, model_path, config_file, batch_size=32):
             Path to the configuration of the model
         batch_size: int
             batch size during inference
+        overlap: float in (0, 1)
+            overlap of predicted crops
     """
     raw_data_path = Path(raw_data_path)
     model_path = Path(model_path)
@@ -58,7 +60,7 @@ def inference(raw_data_path, model_path, config_file, batch_size=32):
     if data_set not in model_path.as_posix():
         raise Warning(f"The model {model_path} is not named as the data set {data_set}")
 
-    overlap = 0.25
+    # overlap = 0.25
 
     with open(config_file) as file:
         train_config = json.load(file)

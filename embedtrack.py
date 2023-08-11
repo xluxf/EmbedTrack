@@ -9,12 +9,12 @@ def read_args(argv):
 
     try:
         opts, args = getopt.getopt(argv[1:], "hi:u:o:", ["help", "data_path=",
-                                                         "sequence=", "model_path="])
+                                                         "sequence=", "model_path=", "batch_size="])
     except:
         print(arg_help)
         sys.exit(2)
 
-    args_dict = {}
+    args_dict = {'batch_size': 8}
     for opt, arg in opts:
         if opt in ("-h", "--help"):
             print(arg_help)  # print the help message
@@ -25,6 +25,8 @@ def read_args(argv):
             args_dict['sequence'] = arg
         elif opt in ("-m", "--model_path"):
             args_dict['model_path'] = arg
+        elif opt in ("-b", "--batch_size"):
+            args_dict['batch_size'] = arg
 
     return args_dict
 
@@ -56,12 +58,13 @@ def main(data_path, seq, model_dir, batch_size=128):
 
     model_path = os.path.join(model_dir, "best_iou_model.pth")
     config_file = os.path.join(model_dir, "config.json")
-    inference(img_path, model_path, config_file, batch_size=batch_size)
+    print(f'running inference({img_path}, {model_path}, {config_file}, batch_size={batch_size})')
+    inference(img_path, model_path, config_file, batch_size=batch_size, overlap=0.25)
 
 
 if __name__ == "__main__":
     args = read_args(sys.argv)
 
     print('running embedtrack with the following arguments:', args)
-    main(args['data_path'], args['sequence'], args['model_path'])
+    main(args['data_path'], args['sequence'], args['model_path'], args['batch_size'])
 
