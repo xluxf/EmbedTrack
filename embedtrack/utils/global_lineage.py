@@ -45,7 +45,7 @@ def get_offset_wavefunc(instances, offset, time, scale=1):
     height, width = offset.shape[1], offset.shape[2]
 
     yxm = get_gradient(height, width)
-    spatial_emb = (yxm - offset * scale) * 255
+    spatial_emb = (yxm - offset[:2] * scale) * 255
 
     # output structure
     waves_list = []
