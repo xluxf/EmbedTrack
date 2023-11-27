@@ -25,6 +25,8 @@ from embedtrack.utils.global_lineage import get_offset_wavefunc
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+DEBUG = False
+
 
 class InferenceDataSet(Dataset):
     """
@@ -116,7 +118,8 @@ class InferenceDataSetBatch(Dataset):
         print('loading_dataset')
         n_crops = 0
 
-        for f_idx in tqdm(img_files.keys()):
+        for f_idx in tqdm(sorted(img_files.keys())):
+            print(img_files[f_idx])
             crops_frame = generate_crops(
                 os.path.join(img_files[f_idx]),
                 config["crop_size"],
@@ -707,11 +710,17 @@ def smooth_prediction_batch(data_loader, model, n_crops):
             seg_images_curr = deaugment_segmentation_batch(seg_images_curr_aug)
             seg_images_prev = deaugment_segmentation_batch(seg_images_prev_aug)
             offsets = deaugment_offset_batch(offsets_aug)
+            
+            #print('seg_images_curr', seg_images_curr.shape)
+            #print('seg_images_prev', seg_images_prev.shape)
+            #print('offsets', offsets.shape)
+
 
             # concatenate with buffer along batch axis
             buff_curr += torch.split(seg_images_curr, 1)
             buff_prev += torch.split(seg_images_prev, 1)
             buff_offset += torch.split(offsets, 1)
+
 
             # reconstruct the image
             # 1.) check if
@@ -795,7 +804,7 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
 
     """
 
-    print(config, data_config, model_config)
+    _, _, n_offsets = model_config['kwargs']['n_classes']
     batch_size = int(data_config['batch_size'])
     grid_x, grid_y = config['grid_x'], config['grid_y']
 
@@ -859,7 +868,7 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
 
     seg_curr_buffer = TensorBuffer(n_crops, img_shape=(5, grid_x, grid_y), dev=str(device))
     seg_prev_buffer = TensorBuffer(n_crops, img_shape=(5, grid_x, grid_y), dev=str(device))
-    offset_buffer = TensorBuffer(n_crops, img_shape=(4, grid_x, grid_y), dev=str(device))
+    offset_buffer = TensorBuffer(n_crops, img_shape=(n_offsets, grid_x, grid_y), dev=str(device))
 
     time_previous = 0
     seg_patches_curr, img_index = None, None
@@ -980,15 +989,23 @@ def infer_sequence_offsets(model, data_config, model_config, config, cluster, mi
             save_path = os.path.join(data_dirs["tracking_dir"], basename)
             # print(f"Saving mask {basename} of curr time {time_curr}")
             tifffile.imwrite(save_path, instances_curr, compression='zlib')
+            
+            print(save_path)
+            
+            
+            if DEBUG:
 
-            # DEBUG
-            # save offsets to check properties
-            seg_basename = f'DEBUG_seg_offset{time_curr:04d}.npy'
-            tra_basename = f'DEBUG_tra_offset{time_curr:04d}.npy'
-            instances_basename = f'DEBUG_instances{time_curr:04d}.npy'
-            np.save(os.path.join(data_dirs["tracking_dir"], tra_basename), track_offsets)
-            np.save(os.path.join(data_dirs["tracking_dir"], seg_basename), seg_curr_offsets)
-            np.save(os.path.join(data_dirs["tracking_dir"], instances_basename), instances_curr)
+                # DEBUG
+                # save offsets to check properties
+                tra_basename = f'DEBUG_tra_offset{time_curr:04d}.npy'
+                all_basename = f'DEBUG_all_offset{time_curr:04d}.npy'
+                seg_basename = f'DEBUG_seg_offset{time_curr:04d}.npy'
+                instances_basename = f'DEBUG_instances{time_curr:04d}.npy'
+
+                np.save(os.path.join(data_dirs["tracking_dir"], tra_basename), track_offsets)
+                np.save(os.path.join(data_dirs["tracking_dir"], all_basename), all_offsets.detach().cpu())
+                np.save(os.path.join(data_dirs["tracking_dir"], seg_basename), seg_curr_offsets)
+                np.save(os.path.join(data_dirs["tracking_dir"], instances_basename), instances_curr)
 
 
             del instances_curr, track_offsets, seg_curr

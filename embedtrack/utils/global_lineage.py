@@ -1,5 +1,9 @@
+"""
+Author: Filip Lux (2023), Karlsruhe Institute of Technology
+Licensed under MIT License
+"""
+
 import numpy as np
-from skimage import measure
 
 
 def get_gradient(height, width):
@@ -22,8 +26,6 @@ def get_gradient(height, width):
     yxm = np.stack((grad_x, grad_y), 0)
     return yxm
 
-from matplotlib import pyplot as plt
-
 
 def get_offset_wavefunc(instances, offset, time, scale=1):
     """
@@ -41,6 +43,8 @@ def get_offset_wavefunc(instances, offset, time, scale=1):
         edge_list : list
             list of tuples describing edges in a format (curr_time, prev_time, label_curr, label_prev, prob)
     """
+    
+    # TODO: add TANH activation if offsets
 
     height, width = offset.shape[1], offset.shape[2]
 
@@ -51,30 +55,16 @@ def get_offset_wavefunc(instances, offset, time, scale=1):
     waves_list = []
 
     # iterate over instances
-    for reg_curr in measure.regionprops(instances):
-        
+    for label in np.unique(instances):
+        if label == 0:
+            continue
+        cc, rr = (instances == label).nonzero()
+
         # mask offset by a region
-        cc, rr = np.split(reg_curr.coords, 2, axis=1)
         x = spatial_emb[0, cc, rr].flatten()
         y = spatial_emb[1, cc, rr].flatten()
 
-
-
-        if reg_curr.label == 1 and False:
-            plt.scatter(x, y)
-
-            ox = offset[0, cc, rr].flatten()
-            oy = offset[1, cc, rr].flatten()
-
-            #plt.scatter(ox, oy)
-
-            plt.title(f'{ox.mean():.04f}, {ox.std():.04f}, {oy.mean():.04f}, {oy.std():.04f}')
-            #plt.show()
-
-        cov = np.cov(np.stack([x, y], axis=0))
-        assert cov.shape == (2, 2)
-
-        sample = [time, reg_curr.label, np.mean(x), np.mean(y), np.std(x), np.std(y), cov[0, 0], cov[0, 1], cov[1, 0], cov[1, 1]]
+        sample = [time, label, np.mean(x), np.mean(y), np.std(x), np.std(y), 'c00', 'c01', 'c10', 'c11']
         waves_list.append(sample)
 
     return waves_list
