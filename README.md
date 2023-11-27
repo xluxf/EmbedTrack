@@ -6,5 +6,5 @@
 It was created to experiment with the method and export additional output while inferring the model.
 
 When looking for an implementation of the EmbedTrack method, please continue to the following link: 
-https://git.scc.kit.edu/kit-loe-ge/embedtrack
+https://github.com/kaloeffler/EmbedTrack
 
